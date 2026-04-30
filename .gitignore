@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Build systems
+_skbuild/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+Makefile
+
+# Project specific
+outputs/
+data/*.db
+models/*.onnx
+models/*.bin
+include/miniaudio.h

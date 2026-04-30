@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core>=0.9.0", "nanobind>=1.9.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "amikas_ears"
+version = "0.1.0"
+description = "High-performance live audio diarization and separation engine"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "granian>=1.2.0",
+    "nanobind>=1.9.0",
+    "onnxruntime-gpu>=1.17.0",
+    "numpy>=1.26.0",
+    "soundfile>=0.12.1",
+]
+
+[tool.scikit-build]
+wheel.packages = ["src/amikas_ears"]
+cmake.args = ["-DCMAKE_BUILD_TYPE=Release"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]
