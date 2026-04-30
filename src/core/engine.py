@@ -29,7 +29,7 @@ class AmikaEngine:
         self.db = DatabaseManager(db_path)
         self.is_running = False
 
-    async def process_loop(self, bridge):
+    async def process_loop(self, bridge, audio_state=None):
         self.is_running = True
         bridge.start()
         
@@ -37,7 +37,12 @@ class AmikaEngine:
             while self.is_running:
                 chunk = bridge.get_latest_chunk()
                 
-                if self.splitter.should_trigger_separation(chunk):
+                # Always calculate RMS for monitoring
+                rms = self.splitter.calculate_rms(chunk)
+                if audio_state:
+                    audio_state.current_rms = float(rms)
+                
+                if self.separator.is_loaded and self.splitter.should_trigger_separation(chunk):
                     # 1. Separate into two speakers
                     speakers = self.separator.separate(chunk)
                     

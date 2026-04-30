@@ -1,76 +1,67 @@
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from src.bridge import audio_bridge
+from src.core.engine import AmikaEngine
+import threading
 import asyncio
 import json
-import numpy as np
-from granian import Granian
-from granian.constants import Interfaces
 
 class AudioState:
     def __init__(self, bridge):
         self.bridge = bridge
+        self.current_rms = 0.0
 
     def get_rms(self):
-        chunk = self.bridge.get_latest_chunk()
-        if len(chunk) == 0:
-            return 0.0
-        return float(np.sqrt(np.mean(np.square(chunk))))
+        return self.current_rms
 
-class GranianServer:
-    def __init__(self, audio_state):
-        self.audio_state = audio_state
+def start_engine(engine, bridge, audio_state):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(engine.process_loop(bridge, audio_state))
 
-    async def __call__(self, scope, receive, send):
-        if scope['type'] == 'websocket':
-            await self.handle_websocket(receive, send)
-        else:
-            await self.handle_http(receive, send)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Boot C++ Bridge INSIDE the worker process
+    print("Worker Booting: Initializing C++ Audio Bridge...")
+    bridge = audio_bridge.AudioBridge(sampleRate=48000, channels=1, bufferSize=4800)
+    engine = AmikaEngine()
+    audio_state = AudioState(bridge)
+    app.state.audio = audio_state
+    
+    # Start Engine
+    engine_thread = threading.Thread(target=start_engine, args=(engine, bridge, audio_state), daemon=True)
+    engine_thread.start()
+    
+    yield # Application runs here
+    
+    # Teardown C++ Bridge gracefully when worker shuts down
+    print("Worker Shutting Down: Cleaning up C++ Bridge...")
+    if hasattr(bridge, 'stop'):
+        bridge.stop()
+    del bridge
 
-    async def handle_http(self, receive, send):
-        await send({
-            'type': 'http.response.start',
-            'status': 200,
-            'headers': [(b'content-type', b'text/plain')]
-        })
-        await send({
-            'type': 'http.response.body',
-            'body': b"Amika's Ears: Granian Server Active"
-        })
-
-    async def handle_websocket(self, receive, send):
-        await send({'type': 'websocket.accept'})
+def create_app() -> FastAPI:
+    app = FastAPI(lifespan=lifespan)
+    
+    @app.get("/")
+    async def root():
+        return "Amika's Ears: Granian Server Active"
         
-        # Streaming loop
+    @app.websocket("/")
+    async def websocket_endpoint(websocket: WebSocket):
+        await websocket.accept()
         try:
             while True:
-                # Check for disconnect
-                # (A real implementation would use a more robust way to check receive())
-                
-                # Calculate RMS from the bridge
-                rms = self.audio_state.get_rms()
-                
-                # Send to frontend
-                await send({
-                    'type': 'websocket.send',
-                    'text': json.dumps({
-                        "type": "rms_update",
-                        "value": rms
-                    })
-                })
-                
-                # ~30 FPS for the dashboard
+                audio_state = app.state.audio
+                rms = audio_state.get_rms() if audio_state else 0.0
+                await websocket.send_text(json.dumps({
+                    "type": "rms_update",
+                    "value": rms
+                }))
                 await asyncio.sleep(0.033)
-                
+        except WebSocketDisconnect:
+            pass
         except Exception as e:
             print(f"WebSocket error: {e}")
-        finally:
-            # Handle disconnect logic if needed
-            pass
 
-def run_server(audio_state, host="0.0.0.0", port=8000):
-    server = Granian(
-        target=GranianServer(audio_state),
-        address=host,
-        port=port,
-        interface=Interfaces.ASGI,
-        threads=2
-    )
-    server.serve()
+    return app

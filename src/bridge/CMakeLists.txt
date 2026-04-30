@@ -4,3 +4,5 @@ target_include_directories(audio_bridge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../.
 
 # On Linux, miniaudio needs these
 target_link_libraries(audio_bridge PRIVATE dl pthread m)
+
+install(TARGETS audio_bridge DESTINATION src/bridge)

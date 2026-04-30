@@ -1,33 +1,27 @@
-import asyncio
-import threading
-from src.bridge import audio_bridge
-from src.core.engine import AmikaEngine
-from src.server.app import AudioState, run_server
+# main.py
+import os
+import sys
+from granian import Granian
 
-def start_engine(engine, bridge):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(engine.process_loop(bridge))
+# Dynamically link local pip CUDA libraries
+venv_lib = os.path.join(os.path.dirname(sys.executable), "../lib/python3.12/site-packages")
+nvidia_cublas = os.path.join(venv_lib, "nvidia/cublas/lib")
+nvidia_cudnn = os.path.join(venv_lib, "nvidia/cudnn/lib")
+nvidia_cufft = os.path.join(venv_lib, "nvidia/cufft/lib")
+nvidia_cuda_runtime = os.path.join(venv_lib, "nvidia/cuda_runtime/lib")
+os.environ["LD_LIBRARY_PATH"] = f"{nvidia_cublas}:{nvidia_cudnn}:{nvidia_cufft}:{nvidia_cuda_runtime}:" + os.environ.get("LD_LIBRARY_PATH", "")
 
 def main():
-    # 1. Initialize Audio Bridge (48kHz, Mono)
-    # The bridge handles its own thread for miniaudio capture
-    print("Initializing Audio Bridge...")
-    bridge = audio_bridge.AudioBridge(sampleRate=48000, channels=1, bufferSize=4800)
-    
-    # 2. Initialize Engine
-    engine = AmikaEngine()
-    
-    # 3. Shared State for Server
-    audio_state = AudioState(bridge)
-    
-    # 4. Start Engine in a separate thread
-    engine_thread = threading.Thread(target=start_engine, args=(engine, bridge), daemon=True)
-    engine_thread.start()
-    
-    # 5. Start Granian Server (Blocking)
-    print("Starting Granian Server on http://0.0.0.0:8000")
-    run_server(audio_state)
+    print("Starting Granian Server...")
+    server = Granian(
+        target="src.server.app:create_app", 
+        address="0.0.0.0", 
+        port=8000, 
+        workers=1,
+        interface="asgi",
+        factory=True # Crucial for Granian 2.x string targets
+    )
+    server.serve()
 
 if __name__ == "__main__":
     main()
