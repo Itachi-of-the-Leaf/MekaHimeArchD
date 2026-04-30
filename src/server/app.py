@@ -1,14 +1,25 @@
 import asyncio
 import json
+import numpy as np
 from granian import Granian
 from granian.constants import Interfaces
 
-class App:
-    def __init__(self, scope):
-        self.scope = scope
+class AudioState:
+    def __init__(self, bridge):
+        self.bridge = bridge
 
-    async def __call__(self, receive, send):
-        if self.scope['type'] == 'websocket':
+    def get_rms(self):
+        chunk = self.bridge.get_latest_chunk()
+        if len(chunk) == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(chunk))))
+
+class GranianServer:
+    def __init__(self, audio_state):
+        self.audio_state = audio_state
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'websocket':
             await self.handle_websocket(receive, send)
         else:
             await self.handle_http(receive, send)
@@ -21,35 +32,45 @@ class App:
         })
         await send({
             'type': 'http.response.body',
-            'body': b'Amika\'s Ears API Active'
+            'body': b"Amika's Ears: Granian Server Active"
         })
 
     async def handle_websocket(self, receive, send):
-        # WebSocket handshake
-        while True:
-            message = await receive()
-            if message['type'] == 'websocket.connect':
-                await send({'type': 'websocket.accept'})
-            elif message['type'] == 'websocket.receive':
-                # Handle incoming commands
-                data = json.loads(message.get('text', '{}'))
-                # Echo or process
+        await send({'type': 'websocket.accept'})
+        
+        # Streaming loop
+        try:
+            while True:
+                # Check for disconnect
+                # (A real implementation would use a more robust way to check receive())
+                
+                # Calculate RMS from the bridge
+                rms = self.audio_state.get_rms()
+                
+                # Send to frontend
                 await send({
                     'type': 'websocket.send',
-                    'text': json.dumps({"status": "received", "data": data})
+                    'text': json.dumps({
+                        "type": "rms_update",
+                        "value": rms
+                    })
                 })
-            elif message['type'] == 'websocket.disconnect':
-                break
+                
+                # ~30 FPS for the dashboard
+                await asyncio.sleep(0.033)
+                
+        except Exception as e:
+            print(f"WebSocket error: {e}")
+        finally:
+            # Handle disconnect logic if needed
+            pass
 
-def main():
+def run_server(audio_state, host="0.0.0.0", port=8000):
     server = Granian(
-        "src.server.app:App",
-        address="0.0.0.0",
-        port=8000,
+        target=GranianServer(audio_state),
+        address=host,
+        port=port,
         interface=Interfaces.ASGI,
-        threads=4
+        threads=2
     )
     server.serve()
-
-if __name__ == "__main__":
-    main()
