@@ -40,3 +40,25 @@ data/*.db
 models/*.onnx
 models/*.bin
 include/miniaudio.h
+
+# Model files
+models/*.onnx
+models/*.onnx.data
+models/*.bin
+models/*.prototxt
+
+# Voice Data and Identities
+outputs/
+data/*.db
+!data/schema.sql
+
+# UV and Environment
+.venv/
+.uv/
+
+# C++ Build Artifacts (Architecture D specific)
+_skbuild/
+_build/
+*.so
+*.pyd
+include/miniaudio.h
