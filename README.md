@@ -1,14 +1,14 @@
-# Amika Server — Colab Deployment Guide (Phase 1)
+# Amika Server — Colab Deployment Guide (Phase 2: VAD Gate)
 
 ## Architecture Overview
 
 ```
 Windows PC                          Google Colab (T4)
 ─────────────────                   ─────────────────────────────────────
-amika_client.exe                    echo_server.py (FastAPI/uvicorn)
+amika_client.exe                    amika_server.py (FastAPI/uvicorn)
    │                                   │
-   │  Binary WebSocket                 │
-   │  L16 PCM, 20ms frames             │
+   │  Binary WebSocket                 ├── [Echo 48kHz back immediately]
+   │  L16 PCM, 20ms frames             └── [Silero VAD v4 — fire & forget]
    └──────── wss://xxx.trycloudflare.com/audio ──────────────────┘
                         (Cloudflare Tunnel, TLS terminated at edge)
 ```
@@ -28,10 +28,13 @@ REPO_DIR = '/content/drive/MyDrive/MekaHimeArchD'
 
 if not os.path.exists(REPO_DIR):
     !git clone https://github.com/Itachi-of-the-Leaf/MekaHimeArchD.git "{REPO_DIR}"
-else:
-    !git -C "{REPO_DIR}" pull --rebase origin main
 
-# Add repo root to Python path so `server.echo_server` is importable
+# Always pull & checkout the Drive_Pivot branch
+!git -C "{REPO_DIR}" fetch origin
+!git -C "{REPO_DIR}" checkout Drive_Pivot
+!git -C "{REPO_DIR}" pull --rebase origin Drive_Pivot
+
+# Add repo root to Python path so `server.amika_server` is importable
 sys.path.insert(0, REPO_DIR)
 os.chdir(REPO_DIR)
 print("✅ Repo ready:", REPO_DIR)
@@ -56,7 +59,7 @@ print("✅ Dependencies installed.")
 import subprocess, threading, time
 
 server_proc = subprocess.Popen(
-    ["python", "-m", "uvicorn", "server.echo_server:app",
+    ["python", "-m", "uvicorn", "server.amika_server:app",
      "--host", "0.0.0.0", "--port", "8765",
      "--log-level", "info"],
     cwd=REPO_DIR,
