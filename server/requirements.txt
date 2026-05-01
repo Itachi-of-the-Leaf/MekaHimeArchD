@@ -1,8 +1,10 @@
-# Phase 3 — Speaker Identity (torch/torchaudio pre-installed on Colab)
+# Phase 3 — VAD Gate + Speaker Identity
+# torch / torchaudio / numpy are pre-installed on Colab T4; listed for reproducibility.
+# NOTE: uvicorn is intentionally absent — granian is the ASGI server for this project.
 fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
+granian>=2.7.0          # Rust-based ASGI server; replaces uvicorn
 torch>=2.0.0
 torchaudio>=2.0.0
 numpy>=1.24.0
-wespeaker>=1.2.0
 scipy>=1.11.0
+wespeaker>=1.2.0
