@@ -61,4 +61,4 @@ _skbuild/
 _build/
 *.so
 *.pyd
-include/miniaudio.h
+include/miniaudio.hclient/build/
