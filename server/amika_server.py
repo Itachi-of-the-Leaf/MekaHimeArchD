@@ -1,29 +1,32 @@
 """
-server/amika_server.py — Phase 3: Decimation + VAD Gate + Speaker Identity
+server/amika_server.py — Phase 3: VAD Gate + Speech Accumulator + Speaker Identity
 
-Per-frame pipeline (20 ms binary frame, 48 kHz mono L16 PCM):
+Transport : Binary WebSocket, 20 ms L16 PCM frames @ 48 kHz mono.
+ASGI server: granian  (NOT uvicorn)
 
-  WebSocket RX
+Startup (Colab / local — from repo root):
+    granian --interface asgi server.amika_server:app --host 0.0.0.0 --port 8765
+
+Per-frame pipeline:
+  WebSocket RX  (48kHz L16 binary frame)
       │
-      ├─► send_bytes(48kHz original)              ← ALWAYS FIRST, unconditional
+      ├─► send_bytes(original 48kHz chunk)          ← ALWAYS FIRST, unconditional
       │
-      └─► create_task(to_thread(_vad_worker))     ← fire-and-forget, non-blocking
+      └─► create_task(to_thread(_vad_worker))        ← fire-and-forget, non-blocking
 
-  _vad_worker  [thread-pool]:
-      1. int16 bytes → float32 → torchaudio.resample(48k→16k)
-      2. Silero VAD v4 → confidence score
-      3. If SPEECH:
-           accumulate 16kHz PCM in per-connection ConnState buffer
-           if buffer >= MIN_SPEECH_FRAMES or silence hangover triggered:
-               wespeaker.extract_embedding → 256D vector
-               SpeakerLibrary.identify_speaker → (name, score)
-               log [SPEECH DETECTED] → Speaker: <NAME> (Conf: X.XX)
-      4. If SILENCE:
-           increment silence hangover counter
-           log [SILENCE]
+  _vad_worker [thread-pool]:
+      1. int16 → float32 → torchaudio.resample(48k→16k)   [Decimation Node]
+      2. Silero VAD v4 → confidence score                   [VAD Gate]
+      3a. SPEECH  → append 16kHz chunk to ConnState buffer
+                    if buffer >= 2.0s OR silence hangover:
+                        wespeaker.extract_embedding(buffer)
+                        SpeakerLibrary.identify_speaker(emb)
+                        log [IDENTITY] → Speaker: <NAME> (Conf: X.XX)
+                        clear buffer
+      3b. SILENCE → log [SILENCE], increment hangover counter
 
-Startup (Colab / local):
-    uvicorn server.amika_server:app --host 0.0.0.0 --port 8765
+Echo is unconditional and always precedes all inference — inference never
+delays the raw audio return to the client.
 """
 
 from __future__ import annotations
@@ -57,33 +60,36 @@ log = logging.getLogger("amika.server")
 # ── Audio constants ───────────────────────────────────────────────────────────
 SR_IN            = 48_000
 SR_VAD           = 16_000
-CHUNK_BYTES      = 1_920     # 20ms @ 48kHz mono int16
-SILERO_MIN_CHUNK = 512       # Silero VAD v4 minimum samples at 16kHz
+CHUNK_BYTES      = 1_920      # 20 ms @ 48 kHz mono int16  = 960 samples × 2 bytes
+SILERO_MIN_CHUNK = 512        # Silero VAD v4 minimum window at 16 kHz
 VAD_THRESHOLD    = 0.5
 
-# ── Speech segment accumulator tunables ───────────────────────────────────────
-MIN_SPEECH_FRAMES = 75       # 75 × 20ms = 1.5 s  (min for reliable embedding)
-MAX_SPEECH_FRAMES = 150      # 150 × 20ms = 3.0 s  (force-extract if exceeded)
-SILENCE_HANGOVER  = 5        # silent frames tolerated before segment closes
+# ── Speech accumulator tunables ───────────────────────────────────────────────
+SPEECH_SEGMENT_FRAMES = 100   # 100 × 20 ms = 2.0 s  (trigger embedding extraction)
+SILENCE_HANGOVER      = 5     # allow 5 silent frames (100 ms) before closing segment
 
-# ── Global model handles (set in lifespan) ────────────────────────────────────
-_device:          torch.device | None        = None
-_vad_model:       torch.nn.Module | None     = None
-_speaker_model:   Any | None                 = None   # wespeaker Speaker object
-_library:         SpeakerLibrary | None      = None
+# ── Global model handles (populated in lifespan) ──────────────────────────────
+_device:        torch.device | None    = None
+_vad_model:     torch.nn.Module | None = None
+_speaker_model: Any | None             = None   # wespeaker.Speaker object
+_library:       SpeakerLibrary | None  = None
 
-# ── Per-connection speech accumulation state ──────────────────────────────────
+
+# ── Per-connection state ───────────────────────────────────────────────────────
 @dataclass
 class ConnState:
+    """Buffers 16 kHz speech frames until a full segment is ready."""
     speech_16k:      list[np.ndarray] = field(default_factory=list)
     in_speech:       bool             = False
     silence_counter: int              = 0
     lock:            threading.Lock   = field(default_factory=threading.Lock)
 
+
 _conn_states:      dict[str, ConnState] = {}
 _conn_states_lock: threading.Lock       = threading.Lock()
 
-# ── Model loader helpers (called in thread-pool during lifespan) ──────────────
+
+# ── Model loaders (run in thread-pool during lifespan) ────────────────────────
 
 def _load_vad() -> torch.nn.Module:
     model, _ = torch.hub.load(
@@ -92,41 +98,48 @@ def _load_vad() -> torch.nn.Module:
     )
     return model
 
+
 def _load_wespeaker() -> Any:
     import wespeaker as _ws
-    model = _ws.load_model("english")       # ResNet34, 256D, trained on VoxCeleb2
+    model = _ws.load_model("english")   # ResNet34, 256D — VoxCeleb2 pretrained
     if _device is not None and _device.type == "cuda":
         model.set_gpu(0)
     else:
         model.set_cpu()
     return model
 
-# ── VAD worker (runs on thread-pool, never touches the event loop) ────────────
+
+# ── Embedding extraction from raw 16 kHz PCM ─────────────────────────────────
 
 def _extract_embedding(speech_f32: np.ndarray) -> np.ndarray:
-    """Write accumulated 16kHz PCM to in-memory WAV and call wespeaker."""
+    """
+    Write accumulated 16 kHz float32 PCM to an in-memory WAV buffer and call
+    wespeaker.extract_embedding(). torchaudio.load() supports BytesIO natively,
+    which wespeaker uses internally — no temp files, no disk I/O.
+    """
     tensor = torch.from_numpy(speech_f32).unsqueeze(0)   # [1, T]
     buf    = io.BytesIO()
     torchaudio.save(buf, tensor, SR_VAD, format="WAV")
     buf.seek(0)
-    emb = _speaker_model.extract_embedding(buf)           # returns np.ndarray or Tensor
+    emb = _speaker_model.extract_embedding(buf)
     if isinstance(emb, torch.Tensor):
         emb = emb.squeeze().cpu().numpy()
     return np.array(emb, dtype=np.float32).flatten()
 
 
-def _vad_worker(raw_bytes: bytes, frame_id: int, conn_key: str) -> None:
-    """Core per-frame processing: decimation → VAD → optional speaker ID."""
+# ── VAD + Identity worker (thread-pool, never blocks the event loop) ──────────
 
-    # ── 1. Decode + decimate 48kHz → 16kHz ───────────────────────────────────
+def _vad_worker(raw_bytes: bytes, frame_id: int, conn_key: str) -> None:
+
+    # 1. Decimate 48 kHz → 16 kHz
     pcm_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
     pcm_f32   = pcm_int16.astype(np.float32) / 32_768.0
 
-    t48 = torch.from_numpy(pcm_f32).unsqueeze(0).to(_device)   # [1, 960]
-    t16 = torchaudio.functional.resample(t48, SR_IN, SR_VAD)   # [1, 320]
-    chunk_16 = t16.squeeze(0)                                    # [320]
+    t48 = torch.from_numpy(pcm_f32).unsqueeze(0).to(_device)    # [1, 960]
+    t16 = torchaudio.functional.resample(t48, SR_IN, SR_VAD)    # [1, 320]
+    chunk_16 = t16.squeeze(0)                                     # [320]
 
-    # ── 2. Silero VAD ─────────────────────────────────────────────────────────
+    # 2. Silero VAD — pad to minimum chunk size
     padded = chunk_16
     if chunk_16.shape[0] < SILERO_MIN_CHUNK:
         padded = torch.nn.functional.pad(
@@ -138,55 +151,56 @@ def _vad_worker(raw_bytes: bytes, frame_id: int, conn_key: str) -> None:
 
     is_speech = vad_conf > VAD_THRESHOLD
 
-    # ── 3. Fetch per-connection accumulator ───────────────────────────────────
+    # 3. Fetch per-connection accumulator
     with _conn_states_lock:
         state = _conn_states.get(conn_key)
     if state is None:
-        # Connection already closed — silently discard
-        return
+        return   # connection already closed
 
-    # ── 4. Accumulate speech / detect segment boundaries ─────────────────────
+    # 4. Accumulate / detect segment boundaries
     speech_to_embed: np.ndarray | None = None
 
     with state.lock:
         if is_speech:
-            state.in_speech      = True
+            state.in_speech       = True
             state.silence_counter = 0
             state.speech_16k.append(chunk_16.cpu().numpy())
 
-            # Force-extract if we've accumulated enough for a reliable embedding
-            if len(state.speech_16k) >= MAX_SPEECH_FRAMES:
-                speech_to_embed   = np.concatenate(state.speech_16k)
-                state.speech_16k  = []
-        else:
+            # Force-extract if we've hit the 2.0 s segment threshold
+            if len(state.speech_16k) >= SPEECH_SEGMENT_FRAMES:
+                speech_to_embed  = np.concatenate(state.speech_16k)
+                state.speech_16k = []
+                # Don't reset in_speech — speaker may still be talking
+
+        else:   # SILENCE frame
             if state.in_speech:
                 state.silence_counter += 1
-                # Close the segment once hangover exhausted AND we have enough speech
-                if (state.silence_counter >= SILENCE_HANGOVER
-                        and len(state.speech_16k) >= MIN_SPEECH_FRAMES):
-                    speech_to_embed   = np.concatenate(state.speech_16k)
-                    state.speech_16k  = []
-                    state.in_speech   = False
+                # Close segment once hangover window elapses
+                if state.silence_counter >= SILENCE_HANGOVER:
+                    if state.speech_16k:
+                        speech_to_embed  = np.concatenate(state.speech_16k)
+                    state.speech_16k      = []
+                    state.in_speech       = False
                     state.silence_counter = 0
 
-    # ── 5. Speaker identification (only when a full segment is ready) ─────────
+    # 5. Speaker identification — only when a complete segment is ready
     if speech_to_embed is not None and _speaker_model is not None:
         try:
             emb    = _extract_embedding(speech_to_embed)
             result = _library.identify_speaker(emb)
             log.info(
-                "[SPEECH DETECTED] → Speaker: %s (Conf: %.2f) | frame=%d",
+                "[IDENTITY] → Speaker: %s (Conf: %.2f) | frame=%d",
                 result.name, result.score, frame_id,
             )
         except Exception as exc:  # noqa: BLE001
-            log.warning("[SPEECH] Embedding extraction failed: %s", exc)
+            log.warning("[IDENTITY] Embedding extraction failed: %s", exc)
     elif is_speech:
         log.info("[SPEECH DETECTED]  conf=%.3f | frame=%d", vad_conf, frame_id)
     else:
         log.info("[SILENCE]          conf=%.3f | frame=%d", vad_conf, frame_id)
 
 
-# ── FastAPI lifespan ──────────────────────────────────────────────────────────
+# ── FastAPI lifespan ───────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -200,20 +214,22 @@ async def lifespan(app: FastAPI):
     _vad_model = _vad_model.to(_device).eval()
     log.info("✓ Silero VAD v4 ready.")
 
-    log.info("Loading Wespeaker ResNet34 ...")
+    log.info("Loading Wespeaker ResNet34 (english, 256D) ...")
     _speaker_model = await asyncio.to_thread(_load_wespeaker)
     log.info("✓ Wespeaker ResNet34 ready on %s.", _device)
 
     _library = SpeakerLibrary(data_dir=Path(__file__).parent)
-    log.info("✓ SpeakerLibrary ready (%d speakers).", len(_library._names))
+    log.info("✓ SpeakerLibrary ready (%d speaker(s)).", len(_library._names))
 
     yield
 
-    log.info("Server shutting down.")
+    log.info("Amika server shutting down.")
 
 
-app = FastAPI(title="Amika Server — Phase 3: VAD + Speaker Identity",
-              lifespan=lifespan)
+app = FastAPI(
+    title="Amika Server — Phase 3: VAD Gate + Speaker Identity",
+    lifespan=lifespan,
+)
 
 
 # ── TCP_NODELAY helper ────────────────────────────────────────────────────────
@@ -241,11 +257,10 @@ async def audio_pipeline(websocket: WebSocket) -> None:
     await websocket.accept()
     _set_tcp_nodelay(websocket)
 
-    client    = websocket.client
-    conn_key  = f"{client.host}:{client.port}"
+    client   = websocket.client
+    conn_key = f"{client.host}:{client.port}"
     log.info("Client connected: %s", conn_key)
 
-    # Register per-connection state
     with _conn_states_lock:
         _conn_states[conn_key] = ConnState()
 
@@ -257,10 +272,10 @@ async def audio_pipeline(websocket: WebSocket) -> None:
             data: bytes = await websocket.receive_bytes()
             frame_count += 1
 
-            # ── ECHO FIRST: original 48kHz chunk, always, unconditional ───────
+            # ── ECHO FIRST: original 48 kHz chunk, unconditional ──────────────
             await websocket.send_bytes(data)
 
-            # ── Fire VAD+ID as background task (non-blocking) ─────────────────
+            # ── Fire VAD + identity as background task (non-blocking) ─────────
             asyncio.create_task(
                 asyncio.to_thread(_vad_worker, data, frame_count, conn_key)
             )
@@ -273,7 +288,7 @@ async def audio_pipeline(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         log.info("Client disconnected: %s (%d frames)", conn_key, frame_count)
     except Exception as exc:  # noqa: BLE001
-        log.exception("Unexpected error on %s: %s", conn_key, exc)
+        log.exception("Error on %s: %s", conn_key, exc)
     finally:
         with _conn_states_lock:
             _conn_states.pop(conn_key, None)
@@ -286,10 +301,10 @@ async def audio_pipeline(websocket: WebSocket) -> None:
 @app.get("/healthz")
 async def healthz() -> dict:
     return {
-        "status":          "ok",
-        "phase":           3,
-        "device":          str(_device),
-        "vad_loaded":      _vad_model is not None,
-        "wespeaker_loaded": _speaker_model is not None,
+        "status":            "ok",
+        "phase":             3,
+        "device":            str(_device),
+        "vad_loaded":        _vad_model is not None,
+        "wespeaker_loaded":  _speaker_model is not None,
         "enrolled_speakers": len(_library._names) if _library else 0,
     }

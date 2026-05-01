@@ -5,7 +5,7 @@
 ```
 Windows PC                          Google Colab (T4)
 ─────────────────                   ─────────────────────────────────────
-amika_client.exe                    amika_server.py (FastAPI/uvicorn)
+amika_client.exe                    amika_server.py (FastAPI/granian)
    │                                   │
    │  Binary WebSocket                 ├── [Echo 48kHz back immediately]
    │  L16 PCM, 20ms frames             └── [Silero VAD v4 — fire & forget]
@@ -52,16 +52,18 @@ print("✅ Dependencies installed.")
 
 ---
 
-## Step 3 — Start the Echo Server
+## Step 3 — Start the Amika Server
 
 ```python
-# ── Cell 3: Starts uvicorn in the background ──
+# ── Cell 3: Starts granian (Rust ASGI server) in the background ──
 import subprocess, threading, time
 
 server_proc = subprocess.Popen(
-    ["python", "-m", "uvicorn", "server.amika_server:app",
-     "--host", "0.0.0.0", "--port", "8765",
-     "--log-level", "info"],
+    ["python", "-m", "granian",
+     "--interface", "asgi",
+     "--host",      "0.0.0.0",
+     "--port",      "8765",
+     "server.amika_server:app"],
     cwd=REPO_DIR,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
@@ -73,7 +75,7 @@ def _stream_logs(proc):
         print("[server]", line, end="")
 
 threading.Thread(target=_stream_logs, args=(server_proc,), daemon=True).start()
-time.sleep(2)
+time.sleep(3)  # granian needs a moment longer than uvicorn to bind
 print(f"✅ Server started (PID {server_proc.pid}). Listening on :8765")
 ```
 
