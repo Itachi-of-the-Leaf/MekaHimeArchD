@@ -25,6 +25,7 @@ dependencies = [
     "nvidia-cudnn-cu12>=9.21.1.3",
     "nvidia-cufft-cu12>=11.4.1.4",
     "nvidia-cuda-runtime-cu12>=12.9.79",
+    "scipy>=1.15.3",
 ]
 
 [tool.scikit-build]

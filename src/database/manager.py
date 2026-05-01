@@ -5,7 +5,7 @@ import os
 class DatabaseManager:
     def __init__(self, db_path="data/ears.db"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.init_db()
 
     def init_db(self):

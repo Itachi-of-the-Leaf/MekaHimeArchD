@@ -23,7 +23,7 @@ def start_engine(engine, bridge, audio_state):
 async def lifespan(app: FastAPI):
     # Boot C++ Bridge INSIDE the worker process
     print("Worker Booting: Initializing C++ Audio Bridge...")
-    bridge = audio_bridge.AudioBridge(sampleRate=48000, channels=1, bufferSize=4800)
+    bridge = audio_bridge.AudioBridge(sampleRate=48000, channels=1, bufferSize=24000)
     engine = AmikaEngine()
     audio_state = AudioState(bridge)
     app.state.audio = audio_state
