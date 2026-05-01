@@ -38,10 +38,16 @@ class BSRNNSeparator:
         # Telemetry to verify exact ONNX shape
         print(f"[DEBUG] BSRNN Output Shape: {out_array.shape}")
         
-        # Robust slicing based on ONNX rank (handles [batch, sources, time] OR [sources, time])
+        # Robust slicing based on ONNX rank
         if len(out_array.shape) == 3:
-            spk1 = out_array[0, 0, :]
-            spk2 = out_array[0, 1, :]
+            # If shape is [1, time, 2] (Our target architecture)
+            if out_array.shape[2] == 2:
+                spk1 = out_array[0, :, 0]
+                spk2 = out_array[0, :, 1]
+            # Fallback if shape is [1, 2, time]
+            elif out_array.shape[1] == 2:
+                spk1 = out_array[0, 0, :]
+                spk2 = out_array[0, 1, :]
         elif len(out_array.shape) == 2:
             spk1 = out_array[0, :]
             spk2 = out_array[1, :]
