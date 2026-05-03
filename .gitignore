@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Build systems
+_skbuild/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+Makefile
+
+# Project specific
+outputs/
+data/*.db
+models/*.onnx
+models/*.bin
+include/miniaudio.h
+
+# Model files
+models/*.onnx
+models/*.onnx.data
+models/*.bin
+models/*.prototxt
+
+# Voice Data and Identities
+outputs/
+data/*.db
+!data/schema.sql
+
+# UV and Environment
+.venv/
+.uv/
+
+# C++ Build Artifacts (Architecture D specific)
+_skbuild/
+_build/
+*.so
+*.pyd
+include/miniaudio.h
