@@ -27,7 +27,7 @@ librosa>=0.10.0             # Audio feature engineering; wespeaker backend depen
 onnxruntime-gpu>=1.18.0     # ONNX inference on CUDA; required by wespeaker ONNX backend
 
 # ── Speaker Identity ──────────────────────────────────────────────────────────
-wespeaker>=1.2.0            # ResNet34 256D embeddings; VoxCeleb2 pretrained
+git+https://github.com/wenet-e2e/wespeaker.git
 huggingface_hub>=0.22.0     # Model download from HuggingFace Hub (wespeaker internal)
 kaldiio>=2.17.2             # Kaldi-format ark/scp reader; wespeaker data-prep dependency
 
