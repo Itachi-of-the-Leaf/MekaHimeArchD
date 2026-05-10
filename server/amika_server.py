@@ -99,11 +99,26 @@ def _load_vad() -> torch.nn.Module:
     return model
 
 
-def _load_wespeaker() -> Any:
-    # Patch for s3prl breaking on torchaudio >= 2.1.0
+def _load_wespeaker():
+    global _speaker_model
+    
+    # --- THE ULTIMATE PYTORCH 2.1+ MONKEY PATCH ---
+    import sys
+    import types
     import torchaudio
-    if not hasattr(torchaudio, "set_audio_backend"):
+    
+    # Fake set_audio_backend
+    if not hasattr(torchaudio, 'set_audio_backend'):
         torchaudio.set_audio_backend = lambda x: None
+        
+    # Fake sox_effects module
+    if "torchaudio.sox_effects" not in sys.modules:
+        mock_sox = types.ModuleType("torchaudio.sox_effects")
+        # If ever called, just return the unchanged tensor and sample rate
+        mock_sox.apply_effects_tensor = lambda tensor, effects, **kwargs: (tensor, 16000)
+        sys.modules["torchaudio.sox_effects"] = mock_sox
+        torchaudio.sox_effects = mock_sox
+    # ----------------------------------------------
 
     import wespeaker as _ws
     model = _ws.load_model("english")   # ResNet34, 256D — VoxCeleb2 pretrained
