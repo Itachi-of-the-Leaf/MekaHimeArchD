@@ -123,7 +123,18 @@ def _load_wespeaker():
     import wespeaker as _ws
     model = _ws.load_model("english")   # ResNet34, 256D — VoxCeleb2 pretrained
     if _device is not None and _device.type == "cuda":
-        model.set_gpu(0)
+        # --- GPU ALLOCATION FIX ---
+        if hasattr(model, 'set_gpu'):
+            model.set_gpu(0)
+        elif hasattr(model, 'set_device'):
+            model.set_device('cuda:0')
+        elif hasattr(model, 'model'):
+            # Fallback for newest versions bypassing the wrapper
+            import torch
+            model.model = model.model.to(torch.device('cuda:0'))
+            if hasattr(model, 'device'):
+                model.device = torch.device('cuda:0')
+        # --------------------------
     else:
         model.set_cpu()
     return model
