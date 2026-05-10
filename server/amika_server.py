@@ -100,6 +100,11 @@ def _load_vad() -> torch.nn.Module:
 
 
 def _load_wespeaker() -> Any:
+    # Patch for s3prl breaking on torchaudio >= 2.1.0
+    import torchaudio
+    if not hasattr(torchaudio, "set_audio_backend"):
+        torchaudio.set_audio_backend = lambda x: None
+
     import wespeaker as _ws
     model = _ws.load_model("english")   # ResNet34, 256D — VoxCeleb2 pretrained
     if _device is not None and _device.type == "cuda":
