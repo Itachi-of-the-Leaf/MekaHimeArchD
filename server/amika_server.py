@@ -162,73 +162,78 @@ def _extract_embedding(speech_f32: np.ndarray) -> np.ndarray:
 
 def _vad_worker(raw_bytes: bytes, frame_id: int, conn_key: str) -> None:
 
-    # 1. Decimate 48 kHz → 16 kHz
-    pcm_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
-    pcm_f32   = pcm_int16.astype(np.float32) / 32_768.0
+    try:
 
-    t48 = torch.from_numpy(pcm_f32).unsqueeze(0).to(_device)    # [1, 960]
-    t16 = torchaudio.functional.resample(t48, SR_IN, SR_VAD)    # [1, 320]
-    chunk_16 = t16.squeeze(0)                                     # [320]
+        # 1. Decimate 48 kHz → 16 kHz
+        pcm_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
+        pcm_f32   = pcm_int16.astype(np.float32) / 32_768.0
 
-    # 2. Silero VAD — pad to minimum chunk size
-    padded = chunk_16
-    if chunk_16.shape[0] < SILERO_MIN_CHUNK:
-        padded = torch.nn.functional.pad(
-            chunk_16, (0, SILERO_MIN_CHUNK - chunk_16.shape[0])
-        )
+        t48 = torch.from_numpy(pcm_f32).unsqueeze(0).to(_device)    # [1, 960]
+        t16 = torchaudio.functional.resample(t48, SR_IN, SR_VAD)    # [1, 320]
+        chunk_16 = t16.squeeze(0)                                     # [320]
 
-    with torch.no_grad():
-        vad_conf: float = _vad_model(padded, SR_VAD).item()
-
-    is_speech = vad_conf > VAD_THRESHOLD
-
-    # 3. Fetch per-connection accumulator
-    with _conn_states_lock:
-        state = _conn_states.get(conn_key)
-    if state is None:
-        return   # connection already closed
-
-    # 4. Accumulate / detect segment boundaries
-    speech_to_embed: np.ndarray | None = None
-
-    with state.lock:
-        if is_speech:
-            state.in_speech       = True
-            state.silence_counter = 0
-            state.speech_16k.append(chunk_16.cpu().numpy())
-
-            # Force-extract if we've hit the 2.0 s segment threshold
-            if len(state.speech_16k) >= SPEECH_SEGMENT_FRAMES:
-                speech_to_embed  = np.concatenate(state.speech_16k)
-                state.speech_16k = []
-                # Don't reset in_speech — speaker may still be talking
-
-        else:   # SILENCE frame
-            if state.in_speech:
-                state.silence_counter += 1
-                # Close segment once hangover window elapses
-                if state.silence_counter >= SILENCE_HANGOVER:
-                    if state.speech_16k:
-                        speech_to_embed  = np.concatenate(state.speech_16k)
-                    state.speech_16k      = []
-                    state.in_speech       = False
-                    state.silence_counter = 0
-
-    # 5. Speaker identification — only when a complete segment is ready
-    if speech_to_embed is not None and _speaker_model is not None:
-        try:
-            emb    = _extract_embedding(speech_to_embed)
-            result = _library.identify_speaker(emb)
-            log.info(
-                "[IDENTITY] → Speaker: %s (Conf: %.2f) | frame=%d",
-                result.name, result.score, frame_id,
+        # 2. Silero VAD — pad to minimum chunk size
+        padded = chunk_16
+        if chunk_16.shape[0] < SILERO_MIN_CHUNK:
+            padded = torch.nn.functional.pad(
+                chunk_16, (0, SILERO_MIN_CHUNK - chunk_16.shape[0])
             )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[IDENTITY] Embedding extraction failed: %s", exc)
-    elif is_speech:
-        log.info("[SPEECH DETECTED]  conf=%.3f | frame=%d", vad_conf, frame_id)
-    else:
-        log.info("[SILENCE]          conf=%.3f | frame=%d", vad_conf, frame_id)
+
+        with torch.no_grad():
+            vad_conf: float = _vad_model(padded, SR_VAD).item()
+
+        is_speech = vad_conf > VAD_THRESHOLD
+
+        # 3. Fetch per-connection accumulator
+        with _conn_states_lock:
+            state = _conn_states.get(conn_key)
+        if state is None:
+            return   # connection already closed
+
+        # 4. Accumulate / detect segment boundaries
+        speech_to_embed: np.ndarray | None = None
+
+        with state.lock:
+            if is_speech:
+                state.in_speech       = True
+                state.silence_counter = 0
+                state.speech_16k.append(chunk_16.cpu().numpy())
+
+                # Force-extract if we've hit the 2.0 s segment threshold
+                if len(state.speech_16k) >= SPEECH_SEGMENT_FRAMES:
+                    speech_to_embed  = np.concatenate(state.speech_16k)
+                    state.speech_16k = []
+                    # Don't reset in_speech — speaker may still be talking
+
+            else:   # SILENCE frame
+                if state.in_speech:
+                    state.silence_counter += 1
+                    # Close segment once hangover window elapses
+                    if state.silence_counter >= SILENCE_HANGOVER:
+                        if state.speech_16k:
+                            speech_to_embed  = np.concatenate(state.speech_16k)
+                        state.speech_16k      = []
+                        state.in_speech       = False
+                        state.silence_counter = 0
+
+        # 5. Speaker identification — only when a complete segment is ready
+        if speech_to_embed is not None and _speaker_model is not None:
+            try:
+                emb    = _extract_embedding(speech_to_embed)
+                result = _library.identify_speaker(emb)
+                log.info(
+                    "[IDENTITY] → Speaker: %s (Conf: %.2f) | frame=%d",
+                    result.name, result.score, frame_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[IDENTITY] Embedding extraction failed: %s", exc)
+        elif is_speech:
+            log.info("[SPEECH DETECTED]  conf=%.3f | frame=%d", vad_conf, frame_id)
+        else:
+            log.info("[SILENCE]          conf=%.3f | frame=%d", vad_conf, frame_id)
+    
+    except Exception as exc:
+        log.error("Error in _vad_worker frame %d: %s", frame_id, exc, exc_info=True)
 
 
 # ── FastAPI lifespan ───────────────────────────────────────────────────────────
