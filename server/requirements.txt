@@ -1,10 +1,35 @@
 # Phase 3 — VAD Gate + Speaker Identity
 # torch / torchaudio / numpy are pre-installed on Colab T4; listed for reproducibility.
 # NOTE: uvicorn is intentionally absent — granian is the ASGI server for this project.
+
+# ── ASGI Server ───────────────────────────────────────────────────────────────
+granian>=2.7.0              # Rust-based ASGI server; replaces uvicorn
+
+# ── FastAPI Ecosystem ─────────────────────────────────────────────────────────
 fastapi>=0.111.0
-granian>=2.7.0          # Rust-based ASGI server; replaces uvicorn
+starlette>=0.37.0           # FastAPI transport layer; explicit pin for WebSocket stability
+pydantic>=2.6.0             # FastAPI data validation core
+websockets>=12.0            # Async WebSocket transport (FastAPI/Starlette backend)
+python-multipart>=0.0.9     # FastAPI form-data and file-upload parsing
+httpx>=0.27.0               # Async HTTP client; health-check probes and test client
+
+# ── PyTorch Core (Colab T4 pre-installed; pinned for local reproducibility) ───
 torch>=2.0.0
 torchaudio>=2.0.0
+
+# ── Numerical and Signal Processing ──────────────────────────────────────────
 numpy>=1.24.0
 scipy>=1.11.0
-git+https://github.com/wenet-e2e/wespeaker.git
+soundfile>=0.12.0           # Audio file I/O; required by wespeaker embedding extraction
+librosa>=0.10.0             # Audio feature engineering; wespeaker backend dependency
+
+# ── ONNX Runtime (GPU) ────────────────────────────────────────────────────────
+onnxruntime-gpu>=1.18.0     # ONNX inference on CUDA; required by wespeaker ONNX backend
+
+# ── Speaker Identity ──────────────────────────────────────────────────────────
+wespeaker>=1.2.0            # ResNet34 256D embeddings; VoxCeleb2 pretrained
+huggingface_hub>=0.22.0     # Model download from HuggingFace Hub (wespeaker internal)
+kaldiio>=2.17.2             # Kaldi-format ark/scp reader; wespeaker data-prep dependency
+
+# ── Networking and Utilities ──────────────────────────────────────────────────
+requests>=2.31.0            # HTTP requests; torch.hub model downloads on Colab
